@@ -1,3 +1,4 @@
+#main.py
 from typing import Union, Optional #optional allows for None values as default in the model
 from fastapi import FastAPI, Depends, HTTPException, status
 from . import schemas, models # from . = same directory, import schemas from schemas.py. now I access Class by schemas.User

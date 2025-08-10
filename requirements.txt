@@ -1,4 +1,12 @@
+
+# Core FastAPI and Database
 fastapi[standard]
 sqlalchemy
 psycopg2-binary
 python-dotenv
+
+# AI & Vector Database
+pgvector                     # PostgreSQL vector extension
+llama-index-llms-huggingface # (hugging face has free API to quick MVP then I can run local)
+openai                       # For embeddings and LLM calls
+numpy                        # Vector operations
