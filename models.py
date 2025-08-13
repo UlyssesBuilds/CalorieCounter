@@ -62,6 +62,7 @@ class FoodLog(Base):
     
     # Vector tracking (but no actual vector storage)
     has_embedding = Column(Boolean, default=False)  # Track if vectors exist in Pinecone
+    embedding_id = Column(String, nullable=True)  # Store Pinecone vector ID
     embedding_version = Column(String, nullable=True)  # Track embedding model version
     
     # Image storage
@@ -100,6 +101,7 @@ class ExerciseLog(Base):
     
     # Vector tracking
     has_embedding = Column(Boolean, default=False)
+    embedding_id = Column(String, nullable=True)  # Store Pinecone vector ID
     embedding_version = Column(String, nullable=True)
     
     # System fields
@@ -155,6 +157,7 @@ class AIChatLog(Base):
 
     # Vector tracking
     has_embedding = Column(Boolean, default=False)
+    embedding_id = Column(String, nullable=True)  # Store Pinecone vector ID
     embedding_version = Column(String, nullable=True)
 
     # AI metadata

@@ -18,24 +18,21 @@ logger = logging.getLogger(__name__)
 
 class VectorDatabase:
     def __init__(self):
-        """Initialize Pinecone client and Hugging Face client."""
+        """Initialize Pinecone client."""
         self.pc = None
         self.index = None
-        self.hf_client = None
         self._initialized = False
         
         # Configuration
         self.api_key = os.getenv("PINECONE_API_KEY")
-        self.environment = os.getenv("PINECONE_ENVIRONMENT", "us-east-1")
-        self.index_name = os.getenv("PINECONE_INDEX_NAME", "fitness-app-vectors")
-        self.hf_token = os.getenv("HUGGINGFACE_API_TOKEN")
+        #self.environment = os.getenv("PINECONE_ENVIRONMENT")
+        self.index_name = os.getenv("PINECONE_INDEX_NAME")
         
         # Embedding model configuration
-        self.embedding_model_name = os.getenv("EMBEDDING_MODEL")
-        self.embedding_dimension = 1024  # all-MiniLM-L6-v2 dimension
+        self.embedding_dimension = 1024  # Pinecone model for embedding
         
     async def initialize(self):
-        """Initialize Pinecone connection and Hugging Face client."""
+        """Initialize Pinecone connection."""
         if self._initialized:
             return
             
@@ -43,21 +40,12 @@ class VectorDatabase:
             # Initialize Pinecone client
             self.pc = Pinecone(api_key=self.api_key)
             
-            # Create index if it doesn't exist
-            await self._ensure_index_exists()
-            
-            # Connect to index
+            # Connect to your existing index
             self.index = self.pc.Index(self.index_name)
             
-            # Initialize Hugging Face client
-            self.hf_client = InferenceClient(
-                model=self.embedding_model_name,
-                token=self.hf_token
-            )
-            
             self._initialized = True
-            logger.info(f"Vector database initialized with index: {self.index_name}")
-            logger.info(f"Using Hugging Face model: {self.embedding_model_name}")
+            logger.info(f"Vector database initialized with existing index: {self.index_name}")
+            logger.info(f"Using Pinecone's llama-text-embed-v2 model (1024 dimensions)")
             
         except Exception as e:
             logger.error(f"Failed to initialize vector database: {str(e)}")
@@ -87,42 +75,22 @@ class VectorDatabase:
             
         await loop.run_in_executor(None, _check_and_create_index)
     
-    async def generate_embedding(self, text: str) -> List[float]:
-        """Generate embedding for text using Hugging Face API."""
-        if not self._initialized:
-            await self.initialize()
-            
+    async def _generate_embedding(self, text: str) -> List[float]:
+        """Generate embedding vector using Pinecone's inference API."""
         try:
             loop = asyncio.get_event_loop()
-            
-            def _get_embedding():
-                """Synchronous function to call HF API."""
-                # Use the feature extraction task for embeddings
-                embedding = self.hf_client.feature_extraction(text)
-                
-                # Handle different response formats from HF API
-                if isinstance(embedding, list):
-                    # If it's a list of lists, take the first one
-                    if isinstance(embedding[0], list):
-                        embedding = embedding[0]
-                elif hasattr(embedding, 'tolist'):
-                    # If it's a numpy array or tensor
-                    embedding = embedding.tolist()
-                
-                return embedding
-            
-            embedding = await loop.run_in_executor(None, _get_embedding)
-            
-            # Validate embedding dimension
-            if len(embedding) != self.embedding_dimension:
-                logger.warning(f"Unexpected embedding dimension: {len(embedding)}, expected: {self.embedding_dimension}")
-            
-            return embedding
-            
+            embedding_response = await loop.run_in_executor(
+                None,
+                lambda: self.pc.inference.embed(
+                    model="llama-text-embed-v2",
+                    inputs=[{"text": text}],
+                    parameters={"input_type": "query", "truncate": "END"}
+                )
+            )
+            return embedding_response[0]['values']
         except Exception as e:
-            logger.error(f"Failed to generate embedding for text '{text[:50]}...': {str(e)}")
-            # Fallback: return zero vector
-            return [0.0] * self.embedding_dimension
+            logger.error(f"Failed to generate embedding for text '{text}': {str(e)}")
+            raise
     
     async def upsert_food_log(
         self,
@@ -134,40 +102,67 @@ class VectorDatabase:
         quantity_g: Optional[float] = None,
         calories_total: Optional[float] = None
     ) -> str:
-        """Upsert a food log vector to Pinecone."""
+        """Upsert a food log vector to Pinecone using built-in embeddings."""
         if not self._initialized:
             await self.initialize()
             
         try:
-            # Generate embedding using HF API
-            embedding = await self.generate_embedding(food_name)
-            
             # Create vector ID
             vector_id = f"foodlog:{food_log_id}"
             
+            # 1. BUILD COMPREHENSIVE TEXT for Pinecone's embedding model
+            text_parts = [food_name]
+            
+            if meal_type:
+                text_parts.append(f"meal type: {meal_type}")
+            if quantity_g:
+                text_parts.append(f"quantity: {quantity_g}g")
+            if calories_total:
+                text_parts.append(f"calories: {calories_total}")
+            embedding_text = " ".join(text_parts)
+            
             # Prepare metadata
             metadata = {
-                "user_id": user_id,
-                "food_name": food_name,
+                "user_id": int(user_id),
+                "food_name": str(food_name),
                 "type": "food_log",
-                "meal_type": meal_type or "unknown",
+                "meal_type": str(meal_type) if meal_type else "unknown",
                 "meal_date": meal_date.isoformat() if meal_date else None,
-                "quantity_g": quantity_g,
-                "calories_total": calories_total,
+                "quantity_g": float(quantity_g) if quantity_g is not None else None,
+                "calories_total": float(calories_total) if calories_total is not None else None,
                 "created_at": datetime.now().isoformat()
             }
             
             # Clean metadata (remove None values)
             metadata = {k: v for k, v in metadata.items() if v is not None}
             
-            # Upsert to Pinecone
+            # Step 1: Generate embedding using Pinecone's inference API
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
+            embedding_response = await loop.run_in_executor(
                 None,
-                lambda: self.index.upsert(vectors=[(vector_id, embedding, metadata)])
+                lambda: self.pc.inference.embed(
+                    model="llama-text-embed-v2",
+                    inputs=[{"text": embedding_text}],
+                    parameters={"input_type": "passage", "truncate": "END"}
+                )
             )
             
-            logger.info(f"Upserted food log vector: {vector_id}")
+            # Step 2: Extract the embedding vector
+            embedding_vector = embedding_response[0]['values']
+            
+            # Step 3: Upsert to Pinecone with the embedding vector
+            await loop.run_in_executor(
+                None,
+                lambda: self.index.upsert(
+                    vectors=[{  # ✅ Use 'vectors=' not 'data='
+                        "id": vector_id,
+                        "values": embedding_vector,  # ✅ Use embedding_vector not embedding_text
+                        "metadata": metadata
+                    }]
+                )
+            )
+            
+            logger.info(f"Successfully upserted food log vector: {vector_id}")
             return vector_id
             
         except Exception as e:
@@ -184,41 +179,68 @@ class VectorDatabase:
         duration_minutes: Optional[int] = None,
         calories_burned: Optional[float] = None
     ) -> str:
-        """Upsert an exercise log vector to Pinecone."""
+        """Upsert an exercise log vector to Pinecone using built-in embeddings."""
         if not self._initialized:
             await self.initialize()
             
         try:
-            # Generate embedding using HF API
-            embedding_text = f"{exercise_name} {exercise_type or ''}"
-            embedding = await self.generate_embedding(embedding_text.strip())
-            
             # Create vector ID
             vector_id = f"exercise:{exercise_log_id}"
             
+            # Create embedding text
+            text_parts = [exercise_name]
+            if exercise_type:
+                text_parts.append(f"type: {exercise_type}")
+            if duration_minutes:
+                text_parts.append(f"duration: {duration_minutes} minutes")
+            if calories_burned:
+                text_parts.append(f"calories burned: {calories_burned}")
+            
+            embedding_text = " ".join(text_parts)
+            
             # Prepare metadata
             metadata = {
-                "user_id": user_id,
-                "exercise_name": exercise_name,
-                "exercise_type": exercise_type or "unknown",
+                "user_id": int(user_id),
+                "exercise_name": str(exercise_name),
+                "exercise_type": str(exercise_type) if exercise_type else "unknown",
                 "type": "exercise_log",
                 "exercise_date": exercise_date.isoformat() if exercise_date else None,
-                "duration_minutes": duration_minutes,
-                "calories_burned": calories_burned,
+                "duration_minutes": int(duration_minutes) if duration_minutes is not None else None,
+                "calories_burned": float(calories_burned) if calories_burned is not None else None,
                 "created_at": datetime.now().isoformat()
+                
             }
             
             # Clean metadata
             metadata = {k: v for k, v in metadata.items() if v is not None}
             
-            # Upsert to Pinecone
+            # Step 1: Generate embedding using Pinecone's inference API
             loop = asyncio.get_event_loop()
+            embedding_response = await loop.run_in_executor(
+                None,
+                lambda: self.pc.inference.embed(
+                    model="llama-text-embed-v2",
+                    inputs=[{"text": embedding_text}],
+                    parameters={"input_type": "passage", "truncate": "END"}
+                )
+            )
+
+            # Step 2: Extract the embedding vector
+            embedding_vector = embedding_response[0]['values']
+
+            # Step 3: Upsert to Pinecone with the embedding vector
             await loop.run_in_executor(
                 None,
-                lambda: self.index.upsert(vectors=[(vector_id, embedding, metadata)])
+                lambda: self.index.upsert(
+                    vectors=[{
+                        "id": vector_id,
+                        "values": embedding_vector,
+                        "metadata": metadata
+                    }]
+                )
             )
             
-            logger.info(f"Upserted exercise log vector: {vector_id}")
+            logger.info(f"Successfully upserted exercise log vector: {vector_id}")
             return vector_id
             
         except Exception as e:
@@ -232,25 +254,25 @@ class VectorDatabase:
         top_k: int = 10,
         similarity_threshold: float = 0.7
     ) -> List[Dict[str, Any]]:
-        """Search for similar food logs."""
+        """Search for similar food logs using Pinecone's built-in embeddings."""
         if not self._initialized:
             await self.initialize()
             
         try:
-            # Generate query embedding using HF API
-            query_embedding = await self.generate_embedding(query_text)
+            # Generate embedding for query text
+            query_vector = await self._generate_embedding(query_text)
             
             # Prepare filter
             filter_dict = {"type": {"$eq": "food_log"}}
             if user_id:
                 filter_dict["user_id"] = {"$eq": user_id}
                 
-            # Search in Pinecone
+            # Search in Pinecone using the embedding vector
             loop = asyncio.get_event_loop()
             results = await loop.run_in_executor(
                 None,
                 lambda: self.index.query(
-                    vector=query_embedding,
+                    vector=query_vector,  # ✅ Use embedding vector not text
                     filter=filter_dict,
                     top_k=top_k,
                     include_metadata=True
@@ -282,25 +304,25 @@ class VectorDatabase:
         top_k: int = 10,
         similarity_threshold: float = 0.7
     ) -> List[Dict[str, Any]]:
-        """Search for similar exercise logs."""
+        """Search for similar exercise logs using Pinecone's built-in embeddings."""
         if not self._initialized:
             await self.initialize()
             
         try:
-            # Generate query embedding using HF API
-            query_embedding = await self.generate_embedding(query_text)
+            # Generate embedding for query text
+            query_vector = await self._generate_embedding(query_text)
             
             # Prepare filter
             filter_dict = {"type": {"$eq": "exercise_log"}}
             if user_id:
                 filter_dict["user_id"] = {"$eq": user_id}
                 
-            # Search in Pinecone
+            # Search in Pinecone using the embedding vector
             loop = asyncio.get_event_loop()
             results = await loop.run_in_executor(
                 None,
                 lambda: self.index.query(
-                    vector=query_embedding,
+                    vector=query_vector,  # ✅ Use embedding vector not text
                     filter=filter_dict,
                     top_k=top_k,
                     include_metadata=True
@@ -364,17 +386,14 @@ class VectorDatabase:
             if not self._initialized:
                 await self.initialize()
                 
-            # Test embedding generation
-            test_embedding = await self.generate_embedding("health check")
-            
-            # Get index stats
+            # Get index stats to verify connection
             stats = await self.get_index_stats()
             
             return {
                 "status": "healthy",
                 "initialized": self._initialized,
-                "embedding_model": self.embedding_model_name,
-                "embedding_dimension": len(test_embedding),
+                "embedding_model": "llama-text-embed-v2 (Pinecone hosted)",
+                "embedding_dimension": self.embedding_dimension,
                 "index_name": self.index_name,
                 "pinecone_stats": stats
             }

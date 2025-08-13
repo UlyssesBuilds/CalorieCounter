@@ -254,7 +254,7 @@ async def log_exercise(user_id: int, request: schemas.CreateExerciseLog, db: Ses
         raise HTTPException(status_code=404, detail="User not found")
     
     try:
-        new_exercise_log = await crud.create_exercise_log_with_embedding(db, user_id, request)
+        new_exercise_log = await crud.create_exercise_log(db, user_id, request)
         logger.info(f"Exercise log created: {new_exercise_log.id} for user {user_id}")
         return new_exercise_log
         
