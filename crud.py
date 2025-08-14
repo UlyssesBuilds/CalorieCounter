@@ -69,7 +69,7 @@ async def search_similar_food_logs(
     db: Session,
     query: str,
     user_id: Optional[int] = None,
-    limit: int = 10
+    limit: int = 10,
 ) -> List[Dict[str, Any]]:
     """Search for similar food logs using Pinecone similarity search."""
     
@@ -97,7 +97,7 @@ async def search_similar_food_logs(
     
     for vector_item in similar_vectors:
         food_log_id = vector_item["food_log_id"]
-        if food_log_id in food_log_dict:
+        if  food_log_id in food_log_dict:
             food_log = food_log_dict[food_log_id]
             results.append({
                 "food_log": food_log,

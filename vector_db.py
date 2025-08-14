@@ -247,50 +247,85 @@ class VectorDatabase:
             logger.error(f"Failed to upsert exercise log {exercise_log_id}: {str(e)}")
             raise
     
+    ###############
     async def search_similar_foods(
         self,
         query_text: str,
         user_id: Optional[int] = None,
         top_k: int = 10,
-        similarity_threshold: float = 0.7
+        similarity_threshold: float = 0.3
     ) -> List[Dict[str, Any]]:
-        """Search for similar food logs using Pinecone's built-in embeddings."""
+        """Search for similar food logs using query enhancement to match storage format."""
         if not self._initialized:
             await self.initialize()
             
         try:
-            # Generate embedding for query text
-            query_vector = await self._generate_embedding(query_text)
+            # 🔍 DEBUG: Let's see what we're actually searching for
+            print(f"🔍 Original query: '{query_text}'") 
+            # Enhance queries to match your storage format
+            # Try multiple approaches simultaneously
+            search_variations = [
+                query_text,  # Original: "beef"
+                f"{query_text} meal type: lunch",  # Your current storage format
+                f"{query_text} lunch",  # Simpler format
+                f"{query_text} breakfast",
+                f"{query_text} dinner"
+            ]
             
-            # Prepare filter
-            filter_dict = {"type": {"$eq": "food_log"}}
-            if user_id:
-                filter_dict["user_id"] = {"$eq": user_id}
+            all_results = []
+            
+            for variation in search_variations:
+                print(f"🔍 Trying variation: '{variation}'")
                 
-            # Search in Pinecone using the embedding vector
-            loop = asyncio.get_event_loop()
-            results = await loop.run_in_executor(
-                None,
-                lambda: self.index.query(
-                    vector=query_vector,  # ✅ Use embedding vector not text
-                    filter=filter_dict,
-                    top_k=top_k,
-                    include_metadata=True
+                loop = asyncio.get_event_loop()
+                embedding_response = await loop.run_in_executor(
+                    None,
+                    lambda v=variation: self.pc.inference.embed(
+                        model="llama-text-embed-v2",
+                        inputs=[{"text": v}],
+                        parameters={"input_type": "query", "truncate": "END"}
+                    )
                 )
-            )
+                
+                query_vector = embedding_response[0]['values']
+                
+                filter_dict = {"type": {"$eq": "food_log"}}
+                if user_id:
+                    filter_dict["user_id"] = {"$eq": user_id}
+                
+                results = await loop.run_in_executor(
+                    None,
+                    lambda: self.index.query(
+                        vector=query_vector,
+                        filter=filter_dict,
+                        top_k=5,  # Get fewer per variation
+                        include_metadata=True
+                    )
+                )
+                
+                print(f"📊 Found {len(results.matches)} matches for '{variation}'")
+                for match in results.matches:
+                    print(f"   Score: {match.score:.3f}, Food: {match.metadata.get('food_name')}, ID: {match.id}")
+                
+                all_results.extend(results.matches)
             
-            # Process results
-            similar_foods = []
-            for match in results.matches:
+            # Rest of your existing deduplication logic...
+            seen = {}
+            for match in all_results:
                 if match.score >= similarity_threshold:
-                    similar_foods.append({
-                        "id": match.id,
-                        "score": match.score,
-                        "metadata": match.metadata,
-                        "food_log_id": int(match.id.split(":")[1])  # Extract ID from "foodlog:123"
-                    })
-                    
-            logger.info(f"Found {len(similar_foods)} similar foods for query: {query_text}")
+                    if match.id not in seen or match.score > seen[match.id].score:
+                        seen[match.id] = match
+            
+            similar_foods = []
+            for match in sorted(seen.values(), key=lambda x: x.score, reverse=True)[:top_k]:
+                similar_foods.append({
+                    "id": match.id,
+                    "score": match.score,
+                    "metadata": match.metadata,
+                    "food_log_id": int(match.id.split(":")[1])
+                })
+                
+            print(f"🎯 Final results: {len(similar_foods)} foods")
             return similar_foods
             
         except Exception as e:

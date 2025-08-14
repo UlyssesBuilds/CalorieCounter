@@ -171,7 +171,7 @@ async def get_food_logs(
         raise HTTPException(status_code=404, detail="User not found")
     
     try:
-        food_logs, total_count = crud.get_food_logs_paginated(db, user_id, skip, limit, date_filter)
+        food_logs, total_count = crud.get_food_logs(db, user_id, skip, limit, date_filter)
         return {
             "food_logs": food_logs,
             "total_count": total_count,
@@ -191,7 +191,7 @@ async def search_similar_foods(
     query: str = Query(..., min_length=2, max_length=200, description="Food description to search for"),
     limit: int = Query(10, ge=1, le=50, description="Maximum number of results"),
     global_search: bool = Query(False, description="Search all users (true) or just current user (false)"),
-    min_score: float = Query(0.7, ge=0.0, le=1.0, description="Minimum similarity score (0.0-1.0)"),
+    min_score: float = Query(0.0, ge=0.0, le=1.0, description="Minimum similarity score (0.0-1.0)"),
     db: Session = Depends(get_db)
 ):
     """Search for similar food logs using AI similarity search."""
@@ -204,19 +204,32 @@ async def search_similar_foods(
         search_user_id = None if global_search else user_id
         
         # Perform similarity search
-        results = await crud.search_similar_food_logs(
-            db=db,
-            query=query,
+        vector_results = await vector_db.search_similar_foods(
+            query_text=query,
             user_id=search_user_id,
-            limit=limit,
-            min_score=min_score
+            top_k=limit,
+            similarity_threshold=min_score
         )
         
+        # Transform vector results to API format
+        formatted_results = []
+        for result in vector_results:
+            metadata = result.get('metadata', {})
+            formatted_results.append({
+                "id": result['food_log_id'],  # Use the extracted food_log_id
+                "similarity_score": result['score'],
+                "food_name": metadata.get('food_name'),
+                "meal_type": metadata.get('meal_type'),
+                "quantity_g": metadata.get('quantity_g'),
+                "calories_total": metadata.get('calories_total'),
+                # Add other fields as needed
+            })
+
         return {
             "query": query,
-            "results": results,
-            "search_scope": "global" if global_search else "user",
-            "total_found": len(results),
+            "results": formatted_results,
+            "search_scope": "global" if global_search else "user", 
+            "total_found": len(formatted_results),
             "min_score": min_score
         }
         
@@ -278,7 +291,7 @@ async def get_exercise_logs(
         raise HTTPException(status_code=404, detail="User not found")
     
     try:
-        exercise_logs, total_count = crud.get_exercise_logs_paginated(db, user_id, skip, limit, date_filter)
+        exercise_logs, total_count = crud.get_exercise_logs(db, user_id, skip, limit, date_filter)
         return {
             "exercise_logs": exercise_logs,
             "total_count": total_count,
@@ -298,7 +311,7 @@ async def search_similar_exercises(
     query: str = Query(..., min_length=2, max_length=200, description="Exercise description to search for"),
     limit: int = Query(10, ge=1, le=50, description="Maximum number of results"),
     global_search: bool = Query(False, description="Search all users (true) or just current user (false)"),
-    min_score: float = Query(0.7, ge=0.0, le=1.0, description="Minimum similarity score"),
+    min_score: float = Query(0.0, ge=0.0, le=1.0, description="Minimum similarity score"),
     db: Session = Depends(get_db)
 ):
     """Search for similar exercise logs using AI similarity search."""
@@ -333,7 +346,7 @@ async def search_similar_exercises(
 async def delete_exercise_log(user_id: int, exercise_log_id: int, db: Session = Depends(get_db)):
     """Delete an exercise log from both PostgreSQL and Pinecone."""
     try:
-        success = await crud.delete_exercise_log_with_embedding(db, exercise_log_id, user_id)
+        success = await crud.delete_exercise_log(db, exercise_log_id, user_id)
         
         if not success:
             raise HTTPException(status_code=404, detail="Exercise log not found or unauthorized")
@@ -421,7 +434,7 @@ async def get_user_dashboard(
     try:
         # Get day's data
         food_logs, _ = crud.get_food_logs (db, user_id, 0, 100, target_date)
-        exercise_logs, _ = crud.get_exercise_logs_paginated(db, user_id, 0, 100, target_date)
+        exercise_logs, _ = crud.get_exercise_logs(db, user_id, 0, 100, target_date)
         
         # Calculate nutrition totals
         total_calories_consumed = sum(log.calories_total for log in food_logs)
@@ -501,8 +514,8 @@ async def get_weekly_analytics(
         start_date = end_date - timedelta(weeks=weeks_back)
         
         # Get all data in date range
-        food_logs, _ = crud.get_food_logs_date_range(db, user_id, start_date, end_date)
-        exercise_logs, _ = crud.get_exercise_logs_date_range(db, user_id, start_date, end_date)
+        food_logs, _ = crud.get_exercise_logs(db, user_id, start_date, end_date)
+        exercise_logs, _ = crud.get_exercise_logs(db, user_id, start_date, end_date)
         
         # Group by week and calculate averages
         weekly_stats = crud.calculate_weekly_trends(food_logs, exercise_logs, start_date, weeks_back)
