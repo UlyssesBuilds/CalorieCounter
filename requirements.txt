@@ -15,3 +15,7 @@ pydantic
 
 # Async support
 asyncio
+
+# Security
+passlib[bcrypt]            # For securely hashing passwords
+pyjwt                      # For working with JWT and crypto features

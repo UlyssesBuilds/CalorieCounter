@@ -12,7 +12,7 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, nullable=False, index=True)
     username = Column(String, unique=True, nullable=False, index=True)
-    password = Column(String, nullable=False)  # TODO: Hash passwords before storing
+    password = Column(String, nullable=False) #hashed
     
     # Basic profile info
     first_name = Column(String, nullable=False)

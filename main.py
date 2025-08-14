@@ -4,15 +4,20 @@ from fastapi import FastAPI, Depends, HTTPException, status, Query
 from . import schemas, models, crud
 from .database import engine, SessionLocal
 from .vector_db import vector_db
+from .auth import register_user, login_user, get_current_user
 from sqlalchemy.orm import Session
 from datetime import datetime, date, timedelta
 import logging
 import asyncio
 from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 
 # Async context manager for startup/shutdown
 @asynccontextmanager
@@ -49,6 +54,20 @@ def get_db():
     finally:
         db.close()
 
+# -----------------------
+# Add CORS middleware here
+# -----------------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://caloricounterfrontend.lovable.app",    # your front-end domain
+    ],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+
+
+
 # ============================================================================
 # BASIC ENDPOINTS
 # ============================================================================
@@ -76,61 +95,47 @@ async def health_check():
 
 @app.post("/register", response_model=schemas.UserResponse)
 async def register(request: schemas.CreateUser, db: Session = Depends(get_db)):
-    """Register a new user."""
-    # Check for existing user
-    existing_user = db.query(models.User).filter(
-        (models.User.email == request.email) | (models.User.username == request.username)
-    ).first()
-    
-    if existing_user:
-        detail = "Email already registered" if existing_user.email == request.email else "Username already taken"
-        raise HTTPException(status_code=400, detail=detail)
-    
-    # Create new user
-    new_user = models.User(
-        email=request.email,
-        username=request.username,
-        password=request.password,  # TODO: Hash password with bcrypt
-        first_name=request.first_name,
-        age=request.age,
-        height_cm=request.height_cm,
-        weight_kg=request.weight_kg,
-        fitness_goal=request.fitness_goal,
-        target_calories_per_day=request.target_calories_per_day
-    )
-    
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    
-    logger.info(f"New user registered: {new_user.username} (ID: {new_user.id})")
-    return new_user
+    """Register a new user with hashed password and JWT token."""
+    try:
+        new_user = register_user(request, db)
+        logger.info(f"New user registered: {new_user.username} (ID: {new_user.id})")
+        return new_user
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Registration error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Registration failed")
 
 @app.post("/login")
 async def login(request: schemas.LoginUser, db: Session = Depends(get_db)):
-    """User login endpoint."""
-    user = db.query(models.User).filter(models.User.username == request.username).first()
-    
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # TODO: Use proper password hashing comparison (bcrypt)
-    if user.password != request.password:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    
-    return {
-        "message": f"Welcome back, {user.username}!",
-        "user_id": user.id,
-        "login_time": datetime.utcnow().isoformat()
-    }
+    """User login endpoint with JWT token."""
+    try:
+        return login_user(request, db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Login error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Login failed")
 
-@app.get("/user/{user_id}", response_model=schemas.UserResponse)
-async def get_user(user_id: int, db: Session = Depends(get_db)):
-    """Get user profile information."""
-    user = db.query(models.User).filter(models.User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    return user
+@app.get("/user/me", response_model=schemas.UserResponse)
+async def get_current_user_profile(current_user: models.User = Depends(get_current_user)):
+    """Get current authenticated user's profile."""
+    return current_user
+
+# 1. PRIVATE: User's own full profile (protected - shows everything)
+@app.get("/user/me", response_model=schemas.UserResponse)
+async def get_my_profile(current_user: models.User = Depends(get_current_user)):
+    """Get current authenticated user's full profile - PRIVATE ACCESS."""
+    return current_user
+
+# # 2. PUBLIC: Social media view (shows only public info for social features)
+# @app.get("/user/{user_id}/public", response_model=schemas.UserPublicProfile)
+# async def get_user_public_profile(user_id: int, db: Session = Depends(get_db)):
+#     """Get user's public profile for social features - PUBLIC ACCESS."""
+#     user = db.query(models.User).filter(models.User.id == user_id).first()
+#     if not user:
+#         raise HTTPException(status_code=404, detail="User not found")
+#     return user
 
 # ============================================================================
 # FOOD LOG ENDPOINTS WITH AI INTEGRATION

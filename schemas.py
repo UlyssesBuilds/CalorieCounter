@@ -5,7 +5,7 @@ from datetime import datetime
 
 # Register, Login, Profile
 class CreateUser(BaseModel):
-    email: str
+    email: EmailStr
     password: str
     username: str
     first_name: str
@@ -14,6 +14,11 @@ class CreateUser(BaseModel):
     weight_kg: Optional[float] = None
     fitness_goal: Optional[str] = None
     target_calories_per_day: Optional[int] = None
+
+# class UserPublicProfile(BaseModel):
+#     id: int
+#     username: str
+#     first_name: str
 
 class LoginUser(BaseModel):
     username: str

@@ -10,6 +10,7 @@ from .vector_db import vector_db
 
 logger = logging.getLogger(__name__)
 
+
 # ============================================================================
 # FOOD LOG CRUD WITH PINECONE INTEGRATION
 # ============================================================================
