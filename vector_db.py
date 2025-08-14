@@ -337,45 +337,52 @@ class VectorDatabase:
         query_text: str,
         user_id: Optional[int] = None,
         top_k: int = 10,
-        similarity_threshold: float = 0.7
+        similarity_threshold: float = 0.3
     ) -> List[Dict[str, Any]]:
-        """Search for similar exercise logs using Pinecone's built-in embeddings."""
+        """Search for similar exercise logs with minimal enhancement."""
         if not self._initialized:
             await self.initialize()
             
         try:
-            # Generate embedding for query text
-            query_vector = await self._generate_embedding(query_text)
+            # Just try the original query and one enhanced version
+            queries = [query_text, f"{query_text} workout"]
+            all_results = []
             
-            # Prepare filter
-            filter_dict = {"type": {"$eq": "exercise_log"}}
-            if user_id:
-                filter_dict["user_id"] = {"$eq": user_id}
+            for query in queries:
+                embedding = await self._generate_embedding(query)
                 
-            # Search in Pinecone using the embedding vector
-            loop = asyncio.get_event_loop()
-            results = await loop.run_in_executor(
-                None,
-                lambda: self.index.query(
-                    vector=query_vector,  # ✅ Use embedding vector not text
-                    filter=filter_dict,
-                    top_k=top_k,
-                    include_metadata=True
+                filter_dict = {"type": {"$eq": "exercise_log"}}
+                if user_id:
+                    filter_dict["user_id"] = {"$eq": user_id}
+                
+                loop = asyncio.get_event_loop()
+                results = await loop.run_in_executor(
+                    None,
+                    lambda: self.index.query(
+                        vector=embedding,
+                        filter=filter_dict,
+                        top_k=top_k,
+                        include_metadata=True
+                    )
                 )
-            )
+                all_results.extend(results.matches)
             
-            # Process results
-            similar_exercises = []
-            for match in results.matches:
+            # Dedupe and format
+            seen = {}
+            for match in all_results:
                 if match.score >= similarity_threshold:
-                    similar_exercises.append({
-                        "id": match.id,
-                        "score": match.score,
-                        "metadata": match.metadata,
-                        "exercise_log_id": int(match.id.split(":")[1])  # Extract ID from "exercise:123"
-                    })
-                    
-            logger.info(f"Found {len(similar_exercises)} similar exercises for query: {query_text}")
+                    if match.id not in seen or match.score > seen[match.id].score:
+                        seen[match.id] = match
+            
+            similar_exercises = []
+            for match in sorted(seen.values(), key=lambda x: x.score, reverse=True)[:top_k]:
+                similar_exercises.append({
+                    "id": match.id,
+                    "score": match.score,
+                    "metadata": match.metadata,
+                    "exercise_log_id": int(match.id.split(":")[1])
+                })
+                
             return similar_exercises
             
         except Exception as e:

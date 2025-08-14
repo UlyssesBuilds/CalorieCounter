@@ -271,7 +271,8 @@ async def search_similar_exercise_logs(
     db: Session,
     query: str,
     user_id: Optional[int] = None,
-    limit: int = 10
+    limit: int = 10,
+    min_score: float = 0.0
 ) -> List[Dict[str, Any]]:
     """Search for similar exercise logs using Pinecone similarity search."""
     
@@ -279,7 +280,8 @@ async def search_similar_exercise_logs(
     similar_vectors = await vector_db.search_similar_exercises(
         query_text=query,
         user_id=user_id,
-        top_k=limit
+        top_k=limit,
+        similarity_threshold=min_score
     )
     
     if not similar_vectors:
@@ -306,3 +308,4 @@ async def search_similar_exercise_logs(
                 "similarity_score": vector_item["score"],
                 "pinecone_metadata": vector_item["metadata"]        # metadata stored in Pinecone
         })
+    return results
